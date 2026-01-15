@@ -74,8 +74,24 @@ def count_workdays_remaining():
     
     return workdays
 
+def count_weekend_days_remaining():
+    """计算本月剩余的周末天数（包括今天如果是周末）"""
+    now = datetime.now()
+    _, days_in_month = calendar.monthrange(now.year, now.month)
+    
+    weekend_days = 0
+    for day in range(now.day, days_in_month + 1):
+        date = datetime(now.year, now.month, day)
+        # 5=周六, 6=周日
+        if date.weekday() in [5, 6]:
+            weekend_days += 1
+    
+    return weekend_days
+
 def calculate_weekend_punches_needed(data):
-    """计算假设工作日满勤，还需要在周末补打卡多少次才能达到上限"""
+    """计算假设工作日满勤，还需要在周末补打卡多少次才能达到上限
+    返回: (needed, max_possible, is_possible)
+    """
     total_punches = data["total_valid_punches"]
     needed_for_cap = CAP // PRICE  # 要达到上限需要的总打卡次数 (50次)
     
@@ -84,21 +100,36 @@ def calculate_weekend_punches_needed(data):
         return None
     
     # 今天还能打卡几次
+    now = datetime.now()
     today_left = max(0, MAX_DAILY - data["today"]["count"])
+    
+    # 判断今天是否是工作日
+    is_today_workday = now.weekday() < 5
     
     # 剩余的工作日天数（不包括今天）
     workdays_remaining = count_workdays_remaining()
     
     # 假设工作日满勤，还能获得的打卡次数
-    workday_punches = today_left + workdays_remaining * MAX_DAILY
+    if is_today_workday:
+        workday_punches = today_left + workdays_remaining * MAX_DAILY
+    else:
+        # 如果今天是周末，今天的剩余次数不算在工作日打卡里
+        workday_punches = workdays_remaining * MAX_DAILY
     
     # 还需要打卡的次数
     remaining_needed = needed_for_cap - total_punches
     
-    # 需要在周末补打卡的次数
+    # 需要在周末补打卡的次数（理论值）
     weekend_needed = remaining_needed - workday_punches
     
-    return weekend_needed if weekend_needed > 0 else 0
+    # 计算实际剩余的周末打卡机会
+    weekend_days_left = count_weekend_days_remaining()
+    max_weekend_punches = weekend_days_left * MAX_DAILY
+    
+    # 判断是否可能达到上限
+    is_possible = (weekend_needed <= max_weekend_punches)
+    
+    return (weekend_needed if weekend_needed > 0 else 0, max_weekend_punches, is_possible)
 
 def get_absent_workdays(data):
     """获取当月缺勤的工作日列表"""
@@ -167,9 +198,15 @@ def cmd_punch_strict():
     print(f"\033[92m[STRICT] +{PRICE} RMB.\033[0m")
     
     # 如果需要周末补打卡，显示警告
-    weekend_needed = calculate_weekend_punches_needed(data)
-    if weekend_needed is not None and weekend_needed > 0:
-        print(f"\033[91m[WARNING] Need {weekend_needed} weekend punches to reach cap (assuming full workday attendance)!\033[0m")
+    weekend_info = calculate_weekend_punches_needed(data)
+    if weekend_info is not None:
+        needed, max_possible, is_possible = weekend_info
+        if needed > 0:
+            if not is_possible:
+                loss = (needed - max_possible) * PRICE
+                print(f"\033[91m[WARNING] IMPOSSIBLE - only {max_possible} weekend chances left! Loss: {loss} RMB\033[0m")
+            else:
+                print(f"\033[93m[INFO] Need {needed} weekend punches to reach cap (assuming full workday attendance). {max_possible} possible.\033[0m")
     
     cmd_stats(data)
 
@@ -255,11 +292,16 @@ def cmd_stats(data=None):
         print(f"Allowed absences to reach cap ({CAP}): \033[92mCap already reached!\033[0m")
     
     # 显示周末补打卡需求
-    weekend_needed = calculate_weekend_punches_needed(data)
-    if weekend_needed is not None:
-        if weekend_needed > 0:
-            color = "\033[91m" if weekend_needed > 0 else "\033[92m"
-            print(f"Weekend punches needed (if workdays full): {color}{weekend_needed}\033[0m")
+    weekend_info = calculate_weekend_punches_needed(data)
+    if weekend_info is not None:
+        needed, max_possible, is_possible = weekend_info
+        if needed > 0:
+            if not is_possible:
+                loss = (needed - max_possible) * PRICE
+                print(f"Weekend punches needed (if workdays full): \033[91mIMPOSSIBLE - only {max_possible} chances left! Loss: {loss} RMB\033[0m")
+            else:
+                color = "\033[93m" if needed > 5 else "\033[92m"
+                print(f"Weekend punches needed (if workdays full): {color}{needed}\033[0m (max {max_possible} possible)")
         else:
             print(f"Weekend punches needed (if workdays full): \033[92m0 (workdays enough)\033[0m")
     else:
