@@ -1,99 +1,88 @@
+# 📅 Daka Tracker - 个人打卡、收益与牙套提醒工具
 
-# 📅 Daka Tracker - 个人打卡与收益追踪工具
-
-这是一个基于 Python 的轻量级命令行工具，用于追踪每日打卡状态、计算预计收益，并自动根据当月剩余工作日提醒你是否需要周末补卡。
+Daka Tracker 是一个轻量级 Python 命令行工具，用于记录每日打卡、追踪当月收益，并在查看状态时提醒隐形牙套的更换进度。
 
 ## ✨ 主要功能
 
-* **智能收益计算**：根据单价（20元）和月上限（1000元）自动计算已到手金额。
-* **动态预测**：基于当前进度，预测本月最终能拿到的最高金额（如果上限已无法达成，会变红提醒）。
-* **考勤补位分析**：
-* **Allowed absences**: 提醒你为了拿满奖金，本月还能“翘课”多少次。
-* **Weekend punches needed**: 如果工作日打满也拿不满上限，会自动计算还需要在周末补打多少卡。
-
-
-* **缺勤统计**：自动列出本月所有漏打卡的工作日日期。
-* **自动月结**：每月初第一次运行程序时，会自动归档上月数据到历史记录。
-
----
+- **打卡与收益追踪**：按单价、每日上限和每月封顶自动计算已获收益。
+- **当日进度**：状态页会显示今日已打卡次数与每日上限。
+- **动态预测**：根据当前进度估算本月最高可获收益；无法达到封顶时会显示损失警告。
+- **考勤补位分析**：计算达到封顶前还能缺勤多少次，以及需要多少次周末补卡；机会不足时会直接提示无法达成及预计损失。
+- **缺勤统计**：自动列出当月漏打卡的工作日。
+- **自动月结**：新月份第一次运行时，自动归档上月收益。
+- **隐形牙套提醒**：按配置计算当前牙套副数和距下次更换的天数，更换当天会高亮提醒。
 
 ## 🚀 快速开始
 
-### 1. 准备工作
+### 1. 准备环境
 
-确保你已安装 Python 3.x，并将 `daka_status.py` 放在一个固定的目录下。
+确保已安装 Python 3。本项目不需要额外的第三方依赖。
 
-### 2. 使用方法
+### 2. 使用命令
 
 | 命令 | 说明 |
 | --- | --- |
-| `python daka_status.py` | **正式打卡**：增加一次打卡记录并保存日期 |
-| `python daka_status.py s` | **查看状态**：显示当前进度、预测、缺勤等统计 |
-| `python daka_status.py 9:30` | **可疑日志**：记录一个时间点，不计入正式金额（用于备忘） |
-| `python daka_status.py h` | **查看历史**：列出往月结算的金额 |
+| `python3 daka/daka.py` | 正式打卡：增加一次有效打卡并显示当前状态 |
+| `python3 daka/daka.py s` | 查看当前进度、预测、缺勤与牙套提醒 |
+| `python3 daka/daka.py 9:30` | 记录一个可疑时间点，不计入有效打卡和收益 |
+| `python3 daka/daka.py h` | 查看往月收益记录 |
 
----
+## 🔥 配置快捷别名
 
-## 🔥 进阶：配置别名 (Alias)
+为了更方便地打卡，可以将脚本配置为 `dk` 命令。
 
-为了实现“随手打卡”，强烈建议配置别名。这样你只需要在终端输入 `dk` 即可完成打卡。
+### Linux / macOS（zsh 或 bash）
 
-### 在 Linux / macOS (zsh 或 bash)
+在 `~/.zshrc` 或 `~/.bashrc` 中添加：
 
-1. 打开配置文件（如 `~/.zshrc` 或 `~/.bashrc`）：
 ```bash
-nano ~/.zshrc
-
+alias dk='python3 /path/to/project/daka/daka.py'
 ```
 
+保存后执行 `source ~/.zshrc` 或 `source ~/.bashrc`，之后即可使用 `dk`、`dk s` 和 `dk h`。
 
-2. 在文件末尾添加一行（请修改为你的实际路径）：
-```bash
-alias dk='python3 /path/to/your/daka_status.py'
+### Windows（PowerShell）
 
-```
+在 PowerShell 配置文件中添加：
 
-
-3. 保存并刷新配置：`source ~/.zshrc`
-4. 现在你可以直接使用：
-* `dk` (打卡)
-* `dk s` (看状态)
-
-
-
-### 在 Windows (PowerShell)
-
-1. 打开 PowerShell 配置文件：
-```powershell
-notepad $PROFILE
-
-```
-
-
-2. 添加以下函数：
 ```powershell
 function dk {
-    python "C:\你的路径\daka_status.py" $args
+    python "C:\path\to\project\daka\daka.py" $args
 }
-
 ```
 
+重启 PowerShell 后即可使用。
 
-3. 重启 PowerShell 即可使用 `dk` 命令。
+## ⚙️ 打卡配置
 
----
+可在 `daka/daka.py` 顶部调整：
 
-## ⚙️ 逻辑配置
+- `CAP`：每月收益上限，默认为 `1000`。
+- `PRICE`：单次有效打卡收益，默认为 `20`。
+- `MAX_DAILY`：每日有效打卡上限，默认为 `2`。
 
-你可以在脚本顶部的 `=== 配置 ===` 区域修改以下参数：
+## 🦷 牙套提醒配置
 
-* `CAP`: 每月最高收益限额（默认 1000）。
-* `PRICE`: 单次打卡金额（默认 20）。
+牙套计划位于 `daka/aligner_config.json`：
 
+```json
+{
+  "start_date": "2026-08-27",
+  "start_tray": 51,
+  "end_tray": null,
+  "default_days": 7,
+  "special_days": {}
+}
+```
 
-* `MAX_DAILY`: 每日允许打卡次数（默认 2）。
+- `start_date`：`start_tray` 开始佩戴的日期，格式为 `YYYY-MM-DD`。
+- `start_tray`：计划起始的牙套副数。
+- `end_tray`：最后一副牙套；不限定结束副数时设为 `null`。
+- `default_days`：每副默认佩戴天数。
+- `special_days`：按副数覆盖佩戴天数，例如 `{"53": 10}` 表示第 53 副佩戴 10 天。
+
+如果不需要牙套提醒，将 `daka/daka.py` 中的 `ALIGNER_REMINDER_ENABLED` 设为 `False`。
 
 ## 📂 数据存储
 
-数据保存在同目录下的 `daka_status.json` 中，可以根据实际需要手动修改。
-
+打卡数据保存在 `daka/daka_status.json` 中。脚本会自动创建和更新该文件，也可根据实际需要手动修改；修改前建议先备份。

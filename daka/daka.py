@@ -2,11 +2,15 @@ import sys
 import json
 import os
 import calendar
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # === 配置 ===
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_FILE = os.path.join(SCRIPT_DIR, "daka_status.json")
+ALIGNER_CONFIG_FILE = os.path.join(SCRIPT_DIR, "aligner_config.json")
+
+# 隐形牙套提醒总开关；配置内容统一放在 aligner_config.json 中。
+ALIGNER_REMINDER_ENABLED = True
 
 CAP = 1000           # 月上限
 PRICE = 20           # 单价
@@ -59,6 +63,139 @@ def load_data():
 def save_data(data):
     with open(DATA_FILE, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=2)
+
+def _require_positive_int(value, field_name):
+    if type(value) is not int or value <= 0:
+        raise ValueError(f"{field_name} 必须是正整数")
+    return value
+
+def load_aligner_config():
+    """读取并校验牙套配置，返回适合日期计算的配置。"""
+    try:
+        with open(ALIGNER_CONFIG_FILE, 'r', encoding='utf-8') as f:
+            raw = json.load(f)
+    except FileNotFoundError:
+        raise ValueError("未找到 aligner_config.json")
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"无法读取 aligner_config.json：{exc}")
+
+    if not isinstance(raw, dict):
+        raise ValueError("aligner_config.json 顶层必须是对象")
+
+    try:
+        start_date = datetime.strptime(raw["start_date"], "%Y-%m-%d").date()
+    except KeyError:
+        raise ValueError("缺少 start_date")
+    except (TypeError, ValueError):
+        raise ValueError("start_date 必须使用 YYYY-MM-DD 格式")
+
+    start_tray = _require_positive_int(raw.get("start_tray"), "start_tray")
+    default_days = _require_positive_int(raw.get("default_days"), "default_days")
+
+    end_tray = raw.get("end_tray")
+    if end_tray is not None:
+        end_tray = _require_positive_int(end_tray, "end_tray")
+        if end_tray < start_tray:
+            raise ValueError("end_tray 不能小于 start_tray")
+
+    raw_special_days = raw.get("special_days", {})
+    if not isinstance(raw_special_days, dict):
+        raise ValueError("special_days 必须是对象")
+
+    special_days = {}
+    for tray_text, days in raw_special_days.items():
+        try:
+            tray = int(tray_text)
+        except (TypeError, ValueError):
+            raise ValueError(f"special_days 的副数 {tray_text!r} 无效")
+        _require_positive_int(tray, f"special_days 的副数 {tray_text!r}")
+        special_days[tray] = _require_positive_int(
+            days, f"第 {tray} 副的佩戴天数"
+        )
+
+    return {
+        "start_date": start_date,
+        "start_tray": start_tray,
+        "end_tray": end_tray,
+        "default_days": default_days,
+        "special_days": special_days,
+    }
+
+def calculate_aligner_status(config, today=None):
+    """计算今天所处的牙套阶段以及距下一节点的自然日数。"""
+    today = today or datetime.now().date()
+    tray = config["start_tray"]
+    tray_start_date = config["start_date"]
+    end_tray = config["end_tray"]
+
+    if today < tray_start_date:
+        return {
+            "kind": "not_started",
+            "tray": tray,
+            "days": (tray_start_date - today).days,
+        }
+
+    while True:
+        wearing_days = config["special_days"].get(
+            tray, config["default_days"]
+        )
+        change_date = tray_start_date + timedelta(days=wearing_days)
+        is_last_tray = end_tray is not None and tray == end_tray
+
+        if today < change_date:
+            return {
+                "kind": "wearing_last" if is_last_tray else "wearing",
+                "tray": tray,
+                "days": (change_date - today).days,
+            }
+
+        if today == change_date:
+            return {
+                "kind": "finish_today" if is_last_tray else "change_today",
+                "tray": tray,
+            }
+
+        if is_last_tray:
+            return {"kind": "finished", "tray": tray}
+
+        tray += 1
+        tray_start_date = change_date
+
+def show_aligner_reminder(today=None):
+    """在状态输出末尾显示低调倒计时或醒目的当天提醒。"""
+    if not ALIGNER_REMINDER_ENABLED:
+        return
+
+    try:
+        status = calculate_aligner_status(load_aligner_config(), today=today)
+    except ValueError as exc:
+        print(f"\n\033[93m[Aligner] 配置错误：{exc}\033[0m")
+        return
+
+    kind = status["kind"]
+    tray = status["tray"]
+
+    if kind == "not_started":
+        message = f"Aligner · 预计 {status['days']} 天开始佩戴第 {tray} 副"
+        print(f"\n\033[2m{message}\033[0m")
+    elif kind == "wearing":
+        message = (
+            f"Aligner #{tray} · 预计 {status['days']} 天更换至第 {tray + 1} 副"
+        )
+        print(f"\n\033[2m{message}\033[0m")
+    elif kind == "wearing_last":
+        message = f"Aligner #{tray} · 预计 {status['days']} 天完成最后一副"
+        print(f"\n\033[2m{message}\033[0m")
+    elif kind == "change_today":
+        print("\n\033[1;97;41m================================================")
+        print(f"  今天需要更换牙套：第 {tray} 副 → 第 {tray + 1} 副")
+        print("================================================\033[0m")
+    elif kind == "finish_today":
+        print("\n\033[1;97;41m================================================")
+        print(f"  今天第 {tray} 副牙套佩戴完成")
+        print("================================================\033[0m")
+    else:
+        print(f"\n\033[2mAligner · 佩戴计划已完成（最后为第 {tray} 副）\033[0m")
 
 def count_workdays_remaining():
     """计算本月剩余的工作日天数（不包括今天，不包括周六日）"""
@@ -250,6 +387,7 @@ def cmd_stats(data=None):
     denom_color = "\033[96m" if dynamic_ceiling == CAP else "\033[91m"
     
     print(f"Valid Punches : {total_punches}")
+    print(f"Today Punches : {data['today']['count']} / {MAX_DAILY}")
     print(f"Money Secured : \033[1;32m{real_money}\033[0m / {denom_color}{dynamic_ceiling}\033[0m")
     
     # 进度条 (基于动态上限)
@@ -314,6 +452,8 @@ def cmd_stats(data=None):
         print(f"Total absent days: \033[91m{len(absent_dates)}\033[0m")
     else:
         print(f"\nAbsent workdays: \033[92mNone (perfect attendance so far!)\033[0m")
+
+    show_aligner_reminder()
 
 def cmd_history():
     data = load_data()
