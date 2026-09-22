@@ -63,23 +63,35 @@ function dk {
 
 ## 🦷 牙套提醒配置
 
-牙套计划位于 `daka/aligner_config.json`：
+牙套计划、单副特殊天数和完成记录统一保存在 `daka/aligner_config.json`，直接编辑这一个文件即可：
 
 ```json
 {
+  "special_days": {},
   "start_date": "2026-08-27",
   "start_tray": 51,
   "end_tray": null,
   "default_days": 7,
-  "special_days": {}
+  "completed_days": {
+    "51": 7,
+    "52": 7,
+    "53": 7
+  }
 }
 ```
 
+- `special_days`：当前或未来某副的特殊佩戴天数，放在文件最前面。例如改为 `{"55": 4}`，第 55 副就按 4 天计算，可以提前设置。
 - `start_date`：`start_tray` 开始佩戴的日期，格式为 `YYYY-MM-DD`。
 - `start_tray`：计划起始的牙套副数。
 - `end_tray`：最后一副牙套；不限定结束副数时设为 `null`。
 - `default_days`：每副默认佩戴天数。
-- `special_days`：按副数覆盖佩戴天数，例如 `{"53": 10}` 表示第 53 副佩戴 10 天。
+- `completed_days`：已完成各副的实际天数。修改这里的天数会重新计算后续日期。
+
+计算优先级为：已完成记录 > 单副特殊天数 > 默认天数。副数使用字符串键，天数必须是正整数。当前文件的 `special_days` 为空，未应用上述第 55 副的示例。
+
+查看状态时，程序按计划日期判断：到达特殊副数的结束日期当天，就把其天数转入 `completed_days`，并删除 `special_days` 中对应的键值；尚未结束的当前副及未来安排继续保留。自动归档会写回同一个配置文件，保留其他配置及原有日期计算结果。这是按计划自动归档，并非确认实际换副。
+
+直接修改 `default_days` 时，已有完成记录保持原来的天数。第 51～53 副已固定为每副 7 天，因此此次修改从第 54 副（2026-09-17 开始）起生效，当前副已佩戴的天数继续计入。以后再次调整默认天数前，应先将已完成但尚未记录的普通副数及实际天数补入 `completed_days`，以保留历史进度。
 
 如果不需要牙套提醒，将 `daka/daka.py` 中的 `ALIGNER_REMINDER_ENABLED` 设为 `False`。
 

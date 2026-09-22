@@ -2,6 +2,7 @@ import sys
 import json
 import os
 import calendar
+import tempfile
 from datetime import datetime, timedelta
 
 # === 配置 ===
@@ -9,7 +10,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_FILE = os.path.join(SCRIPT_DIR, "daka_status.json")
 ALIGNER_CONFIG_FILE = os.path.join(SCRIPT_DIR, "aligner_config.json")
 
-# 隐形牙套提醒总开关；配置内容统一放在 aligner_config.json 中。
+# 隐形牙套提醒总开关；计划、特殊天数和完成记录统一保存在 aligner_config.json。
 ALIGNER_REMINDER_ENABLED = True
 
 CAP = 1000           # 月上限
@@ -69,7 +70,65 @@ def _require_positive_int(value, field_name):
         raise ValueError(f"{field_name} 必须是正整数")
     return value
 
-def load_aligner_config():
+def _parse_tray_days(raw, field_name):
+    if not isinstance(raw, dict):
+        raise ValueError(f"{field_name} 必须是对象")
+    result = {}
+    for tray_text, days in raw.items():
+        try:
+            tray = int(tray_text)
+        except (TypeError, ValueError):
+            raise ValueError(f"{field_name} 的副数 {tray_text!r} 无效")
+        _require_positive_int(tray, f"{field_name} 的副数 {tray_text!r}")
+        result[tray] = _require_positive_int(days, f"第 {tray} 副的佩戴天数")
+    return result
+
+def archive_completed_special_days(config, today, raw_config):
+    """按计划结束日期归档特殊天数，保留原有日期计算结果。"""
+    special_days = config["special_days"]
+    if not special_days:
+        return
+    completed_days = config["completed_days"]
+    tray_start = config["start_date"]
+    last_tray = max(special_days)
+    if config["end_tray"] is not None:
+        last_tray = min(last_tray, config["end_tray"])
+    changed = False
+    for tray in range(config["start_tray"], last_tray + 1):
+        days = completed_days.get(tray, special_days.get(tray, config["default_days"]))
+        change_date = tray_start + timedelta(days=days)
+        if change_date > today:
+            break
+        if tray in special_days:
+            completed_days[tray] = days
+            del special_days[tray]
+            changed = True
+        tray_start = change_date
+    if not changed:
+        return
+
+    # 原子替换，避免写入中断导致记录文件只保存了一部分。
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=os.path.dirname(ALIGNER_CONFIG_FILE),
+            prefix=".aligner_config-", suffix=".tmp", delete=False,
+        ) as f:
+            temp_path = f.name
+            json.dump({
+                "special_days": {str(k): special_days[k] for k in sorted(special_days)},
+                **{k: v for k, v in raw_config.items() if k not in ("special_days", "completed_days")},
+                "completed_days": {str(k): completed_days[k] for k in sorted(completed_days)},
+            }, f, ensure_ascii=False, indent=2)
+            f.write("\n")
+        os.replace(temp_path, ALIGNER_CONFIG_FILE)
+    except OSError as exc:
+        raise ValueError(f"无法更新 aligner_config.json：{exc}")
+    finally:
+        if temp_path is not None and os.path.exists(temp_path):
+            os.remove(temp_path)
+
+def load_aligner_config(today=None):
     """读取并校验牙套配置，返回适合日期计算的配置。"""
     try:
         with open(ALIGNER_CONFIG_FILE, 'r', encoding='utf-8') as f:
@@ -98,28 +157,19 @@ def load_aligner_config():
         if end_tray < start_tray:
             raise ValueError("end_tray 不能小于 start_tray")
 
-    raw_special_days = raw.get("special_days", {})
-    if not isinstance(raw_special_days, dict):
-        raise ValueError("special_days 必须是对象")
+    special_days = _parse_tray_days(raw.get("special_days", {}), "special_days")
+    completed_days = _parse_tray_days(raw.get("completed_days", {}), "completed_days")
 
-    special_days = {}
-    for tray_text, days in raw_special_days.items():
-        try:
-            tray = int(tray_text)
-        except (TypeError, ValueError):
-            raise ValueError(f"special_days 的副数 {tray_text!r} 无效")
-        _require_positive_int(tray, f"special_days 的副数 {tray_text!r}")
-        special_days[tray] = _require_positive_int(
-            days, f"第 {tray} 副的佩戴天数"
-        )
-
-    return {
+    config = {
         "start_date": start_date,
         "start_tray": start_tray,
         "end_tray": end_tray,
         "default_days": default_days,
         "special_days": special_days,
+        "completed_days": completed_days,
     }
+    archive_completed_special_days(config, today or datetime.now().date(), raw)
+    return config
 
 def calculate_aligner_status(config, today=None):
     """计算今天所处的牙套阶段以及距下一节点的自然日数。"""
@@ -136,8 +186,8 @@ def calculate_aligner_status(config, today=None):
         }
 
     while True:
-        wearing_days = config["special_days"].get(
-            tray, config["default_days"]
+        wearing_days = config.get("completed_days", {}).get(
+            tray, config["special_days"].get(tray, config["default_days"])
         )
         change_date = tray_start_date + timedelta(days=wearing_days)
         is_last_tray = end_tray is not None and tray == end_tray
@@ -167,7 +217,7 @@ def show_aligner_reminder(today=None):
         return
 
     try:
-        status = calculate_aligner_status(load_aligner_config(), today=today)
+        status = calculate_aligner_status(load_aligner_config(today=today), today=today)
     except ValueError as exc:
         print(f"\n\033[93m[Aligner] 配置错误：{exc}\033[0m")
         return
