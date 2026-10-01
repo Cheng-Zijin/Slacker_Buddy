@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_FILE = os.path.join(SCRIPT_DIR, "daka_status.json")
 ALIGNER_CONFIG_FILE = os.path.join(SCRIPT_DIR, "aligner_config.json")
+TOOTHBRUSH_CONFIG_FILE = os.path.join(SCRIPT_DIR, "toothbrush_config.json")
 
 # 隐形牙套提醒总开关；计划、特殊天数和完成记录统一保存在 aligner_config.json。
 ALIGNER_REMINDER_ENABLED = True
@@ -64,6 +65,90 @@ def load_data():
 def save_data(data):
     with open(DATA_FILE, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=2)
+
+def save_toothbrush_config(config):
+    """原子保存更换记录，避免写入失败丢失上次更换时间。"""
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=os.path.dirname(TOOTHBRUSH_CONFIG_FILE),
+            prefix=".toothbrush_config-", suffix=".tmp", delete=False,
+        ) as f:
+            temp_path = f.name
+            json.dump(config, f, ensure_ascii=False, indent=2)
+            f.write("\n")
+        os.replace(temp_path, TOOTHBRUSH_CONFIG_FILE)
+    except OSError as exc:
+        raise ValueError(f"无法保存 toothbrush_config.json：{exc}")
+    finally:
+        if temp_path is not None and os.path.exists(temp_path):
+            os.remove(temp_path)
+
+def parse_toothbrush_date(value, today):
+    try:
+        parsed = datetime.strptime(value, "%Y-%m-%d").date()
+    except (TypeError, ValueError):
+        raise ValueError("牙刷更换日期必须使用 YYYY-MM-DD 格式")
+    if parsed.isoformat() != value:
+        raise ValueError("牙刷更换日期必须使用 YYYY-MM-DD 格式")
+    if parsed > today:
+        raise ValueError("牙刷更换日期不能晚于今天")
+    return parsed
+
+def load_toothbrush_config(today):
+    try:
+        with open(TOOTHBRUSH_CONFIG_FILE, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+    except FileNotFoundError:
+        config = {"last_replaced": None}
+        save_toothbrush_config(config)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"无法读取 toothbrush_config.json：{exc}")
+    if not isinstance(config, dict) or "last_replaced" not in config:
+        raise ValueError("toothbrush_config.json 必须是包含 last_replaced 的对象")
+    if config["last_replaced"] is not None:
+        parse_toothbrush_date(config["last_replaced"], today)
+    return config
+
+def toothbrush_due_date(last_replaced):
+    """三个自然月后的同日；目标月份没有该日时使用月末。"""
+    month_index = last_replaced.year * 12 + last_replaced.month - 1 + 3
+    year, month = divmod(month_index, 12)
+    month += 1
+    day = min(last_replaced.day, calendar.monthrange(year, month)[1])
+    return last_replaced.replace(year=year, month=month, day=day)
+
+def show_toothbrush_reminder(today=None):
+    today = today or datetime.now().date()
+    try:
+        config = load_toothbrush_config(today)
+        if config["last_replaced"] is None:
+            return
+        last_replaced = parse_toothbrush_date(config["last_replaced"], today)
+        due_date = toothbrush_due_date(last_replaced)
+    except ValueError as exc:
+        print(f"\n\033[93m[Toothbrush] 配置错误：{exc}\033[0m")
+        return
+    if today >= due_date:
+        overdue = (today - due_date).days
+        timing = "今天到期" if overdue == 0 else f"已逾期 {overdue} 天"
+        print(f"\n\033[1;97;41m请更换牙刷：{timing}（应更换日期：{due_date}）\033[0m")
+        print("更换后运行 dk toothbrush 记录；未记录更换前将持续提醒。")
+
+def cmd_toothbrush(date_str=None, today=None):
+    today = today or datetime.now().date()
+    try:
+        replaced = parse_toothbrush_date(date_str or today.isoformat(), today)
+        config = load_toothbrush_config(today)
+        due_date = toothbrush_due_date(replaced)
+        config["last_replaced"] = replaced.isoformat()
+        save_toothbrush_config(config)
+    except ValueError as exc:
+        print(f"\033[93m[Toothbrush] {exc}\033[0m")
+        return 1
+    print(f"已记录牙刷更换日期：{replaced}；下次应更换日期：{due_date}。")
+    show_toothbrush_reminder(today)
+    return 0
 
 def _require_positive_int(value, field_name):
     if type(value) is not int or value <= 0:
@@ -371,6 +456,7 @@ def cmd_punch_strict():
     data = load_data()
     if data["today"]["count"] >= MAX_DAILY:
         print(f"\033[93m[Info] Daily limit ({MAX_DAILY}) reached. Ignored.\033[0m")
+        show_toothbrush_reminder()
         return
 
     data["total_valid_punches"] += 1
@@ -504,6 +590,7 @@ def cmd_stats(data=None):
         print(f"\nAbsent workdays: \033[92mNone (perfect attendance so far!)\033[0m")
 
     show_aligner_reminder()
+    show_toothbrush_reminder()
 
 def cmd_history():
     data = load_data()
@@ -517,13 +604,18 @@ def cmd_history():
         print(f"{month} : {history[month]}")
 
 def main():
+    if len(sys.argv) >= 2 and sys.argv[1] == 'toothbrush':
+        if len(sys.argv) <= 3:
+            return cmd_toothbrush(sys.argv[2] if len(sys.argv) == 3 else None)
+        print("Usage: dk toothbrush [YYYY-MM-DD]")
+        return 1
     if len(sys.argv) == 1: cmd_punch_strict()
     elif len(sys.argv) == 2:
         arg = sys.argv[1]
         if arg == 's': cmd_stats()
         elif arg == 'h': cmd_history()
         else: cmd_punch_suspect(arg)
-    else: print("Usage: dk | dk 9:34 | dk s")
+    else: print("Usage: dk | dk 9:34 | dk s | dk h | dk toothbrush [YYYY-MM-DD]")
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

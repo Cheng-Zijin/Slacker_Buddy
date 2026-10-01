@@ -2,3 +2,5 @@
 daka/daka_status.json
 daka/*.swp
 daka/aligner_config.json
+daka/toothbrush_config.json
+daka/test_*
